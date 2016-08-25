@@ -1,5 +1,52 @@
 
 import argparse
+import os
+import sqlite3
+
+CREATE_TABLE_FOLDERS = """
+CREATE TABLE IF NOT EXISTS 
+Folders (id integer PRIMARY KEY AUTOINCREMENT, parent_id integer DEFAULT 0, foldername text NOT NULL)"""
+
+CREATE_TABLE_FILES = """
+CREATE TABLE IF NOT EXISTS 
+Files (id integer PRIMARY KEY AUTOINCREMENT, folder_id integer NOT NULL, filename text NOT NULL, content text DEFAULT '', 
+CONSTRAINT ParentFolder FOREIGN KEY (folder_id) REFERENCES Folders (id) ON DELETE CASCADE)"""
+
+CREATE_ROOT_FOLDER = """INSERT INTO Folders (foldername) VALUES ('Root')"""
+
+class DatabaseProvider(object):
+	DatabaseFile = "database.sqlite"
+
+	@staticmethod
+	def openConnection():
+		return sqlite3.connect(DatabaseProvider.DatabaseFile)
+
+	def __init__(self):
+		self.conn = DatabaseProvider.openConnection()
+
+	def __enter__(self):
+		return self.conn
+
+	def __exit__(self, extype, exvalue, exdebug):
+		if extype is None:
+			self.conn.close()
+		else:
+			print("Exeption: ", extype)
+			return False
+
+class OpenDbTransaction(object):
+	def __init__(self, dbconn):
+		self.conn = dbconn
+
+	def __enter__(self):
+		return self.conn.cursor()
+
+	def __exit__(self, extype, exvalue, exdebug):
+		if extype is None:
+			self.conn.commit()
+		else:
+			print("Exeption: ", extype)
+			return False
 
 class Command(object):
 	def __init__(self, args):
@@ -17,6 +64,10 @@ class ListCommand(object):
 
 	def execute(self):
 		print("list command")
+		with DatabaseProvider() as conn:
+			curr = conn.cursor()
+			for row in curr.execute("SELECT * FROM Folders"):
+				print(row)
 		pass
 		
 
@@ -116,7 +167,17 @@ def parseArgs():
 	else:
 		parser.print_help()
 
+def checkDb():
+	if not os.path.exists(DatabaseProvider.DatabaseFile):
+		conn = DatabaseProvider.openConnection()
+		with OpenDbTransaction(conn) as cursor:
+			cursor.execute(CREATE_TABLE_FOLDERS)
+			cursor.execute(CREATE_TABLE_FILES)
+			cursor.execute(CREATE_ROOT_FOLDER)
+		conn.close()
+
 def main():
+	checkDb()
 	parseArgs()
 
 if __name__ == '__main__':
