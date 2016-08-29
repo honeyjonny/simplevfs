@@ -5,12 +5,20 @@ import sqlite3
 
 CREATE_TABLE_FOLDERS = """
 CREATE TABLE IF NOT EXISTS 
-Folders (id integer PRIMARY KEY AUTOINCREMENT, parent_id integer DEFAULT 0, foldername text NOT NULL)"""
+Folders (id integer PRIMARY KEY AUTOINCREMENT, foldername text NOT NULL UNIQUE)"""
+
+CREATE_TABLE_FOLDERS_HIERACHY = """
+CREATE TABLE IF NOT EXISTS
+FoldersTree (parent_id integer NOT NULL, child_id integer NOT NULL, path_len integer NOT NULL,
+PRIMARY KEY (parent_id, child_id),
+FOREIGN KEY (parent_id) REFERENCES Folders(id),
+FOREIGN KEY (child_id) REFERENCES Folders(id))
+"""
 
 CREATE_TABLE_FILES = """
 CREATE TABLE IF NOT EXISTS 
 Files (id integer PRIMARY KEY AUTOINCREMENT, folder_id integer NOT NULL, filename text NOT NULL, content text DEFAULT '', 
-CONSTRAINT ParentFolder FOREIGN KEY (folder_id) REFERENCES Folders (id) ON DELETE CASCADE)"""
+CONSTRAINT ParentFolder FOREIGN KEY (folder_id) REFERENCES Folders(id) ON DELETE CASCADE)"""
 
 CREATE_ROOT_FOLDER = """INSERT INTO Folders (foldername) VALUES ('Root')"""
 
@@ -65,21 +73,98 @@ class ListCommand(object):
 	def execute(self):
 		print("list command")
 		with DatabaseProvider() as conn:
-			curr = conn.cursor()
-			for row in curr.execute("SELECT * FROM Folders"):
-				print(row)
-		pass
+			# for row in conn.execute("SELECT * FROM Folders"):
+			# 	print(row)
+			# print("------------------------------------------")
+			# for row in conn.execute("SELECT * FROM FoldersTree"):
+			# 	print(row)
+			# print("*******************************************")
+
+			folderDepth = 1
+			rootFolder = conn.execute("""
+				SELECT id, foldername 
+				FROM Folders 
+				WHERE foldername = 'Root'""").fetchone()
+			#print(rootFolder)
+			self.printFolderStructure(folderDepth, rootFolder, conn)
+
+
+	def printFolderStructure(self, folderDepth, folderRow, dbConn):
+
+		self.printEntity(folderDepth, folderRow[1])		
+
+		folderDepth += 1
+
+		self.printFilesInFolder(folderDepth, folderRow, dbConn)
+
+		for folderRow in dbConn.execute("""
+			SELECT id, foldername 
+			FROM Folders as fold 
+			JOIN FoldersTree as tree 
+			ON (fold.id = tree.child_id) 
+			WHERE tree.parent_id = %d""" % folderRow[0]).fetchall():
+			self.printFolderStructure(folderDepth, folderRow, dbConn)
+
+	def printFilesInFolder(self, folderDepth, folderRow, dbConn):
+
+		for file in dbConn.execute("""
+			SELECT filename 
+			FROM Files as files 
+			WHERE files.folder_id = %d""" % folderRow[0]).fetchall():
+			self.printEntity(folderDepth + 1, file[0])
+
+	def printEntity(self, depth, entityName, size = None):
+		signs = '-' * depth
+		if size is not None:
+			print("%s %s  size: %d" % (signs, entityName, size))
+		else:
+			print("%s %s" % (signs, entityName))
 		
 
 class AddFolderCommand(object):
 	"""Incapsulates add folder command logic"""
 	def __init__(self, args):
-		self.path = args.path
-		self.foldername = args.foldername
+		self.path = ''.join(args.path)
+		self.foldername = ''.join(args.foldername)
 
 	def execute(self):
-		print("add_folder")
-		pass
+		
+		pathList = self.path.lstrip("/").rstrip("/").replace('"',"").replace("'","").split('/')
+
+		pathLen = len(pathList) - 1
+
+		newFolder = self.foldername
+
+		if pathLen == 0:
+
+			with DatabaseProvider() as conn:
+
+				parentFolderRow = conn.execute("SELECT id FROM Folders WHERE foldername = 'Root'").fetchone()
+
+				with OpenDbTransaction(conn) as cursor:
+					cursor.execute("INSERT INTO Folders (foldername) VALUES ('%s')" % newFolder)
+					newId = cursor.lastrowid
+					cursor.execute("INSERT INTO FoldersTree (parent_id, child_id, path_len) VALUES (%d,%d,%d)" % (parentFolderRow[0], newId, pathLen + 1))
+		else:		
+			parentFolder = pathList[-1]
+			
+			findParentFolder = """
+			SELECT id, foldername 
+			FROM Folders as fold 
+			JOIN FoldersTree as tree ON (fold.id = tree.child_id) 
+			WHERE fold.id = (SELECT id FROM Folders WHERE foldername = '%s')
+			AND tree.path_len = %d""" % (parentFolder, pathLen)
+
+			with DatabaseProvider() as conn:
+				parentFolderRow = conn.execute(findParentFolder).fetchone()
+			
+				if parentFolderRow is not None:
+
+					with OpenDbTransaction(conn) as cursor:
+						cursor.execute("INSERT INTO Folders (foldername) VALUES ('%s')" % newFolder)
+						newId = cursor.lastrowid
+						cursor.execute("INSERT INTO FoldersTree (parent_id, child_id, path_len) VALUES (%d,%d,%d)" % (parentFolderRow[0], newId, pathLen + 1))
+			pass
 
 class AddFileCommnad(object):
 	"""Incapsulated AddFileCommnad logic"""
@@ -173,7 +258,10 @@ def checkDb():
 		with OpenDbTransaction(conn) as cursor:
 			cursor.execute(CREATE_TABLE_FOLDERS)
 			cursor.execute(CREATE_TABLE_FILES)
+			cursor.execute(CREATE_TABLE_FOLDERS_HIERACHY)
 			cursor.execute(CREATE_ROOT_FOLDER)
+			# cursor.execute(SUB_FOLDER)
+			# cursor.execute(CLOSURE)
 		conn.close()
 
 def main():
