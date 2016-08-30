@@ -61,14 +61,6 @@ class OpenDbTransaction(object):
 			print("Exeption: ", extype)
 			return False
 
-class Command(object):
-	def __init__(self, args):
-		print(args)
-		pass
-
-	def execute(self):
-		print("here")
-		pass
 
 class ListCommand(object):
 	"""Incapsulates list command logic"""
@@ -131,14 +123,16 @@ class ListCommand(object):
 		signs = '-' * depth
 
 		if size is not None:
-			print("%s %s  size: %d" % (signs, entityName, size))
+			print("%s %s (Type: file, Size: %d bytes)" % (signs, entityName, size))
 		else:
 			print("%s %s" % (signs, entityName))
 
+
 class EntityType(Enum):
-	"""Enumerate types of entities for DeleteAnyCommand"""	
+	"""Enumerate types of entities for commands actions"""	
 	Folder = 1
 	File = 2
+
 		
 class CommonDataQueriesMixin(object):
 	"""Mix-ins into command class for reuse of db acces code"""
@@ -198,12 +192,14 @@ class CommonDataQueriesMixin(object):
 				AND filename = '%s'""" % (parentFolderRow[0], entityToRemoveName)).fetchone()
 
 			if folderToRemoveRow is not None and fileToRemoveRow is None:
-				print(folderToRemoveRow)
+				#print(folderToRemoveRow)
 				return (folderToRemoveRow[0], EntityType.Folder)
 
 			elif fileToRemoveRow is not None and folderToRemoveRow is None:
-				print(fileToRemoveRow)
+				#print(fileToRemoveRow)
 				return (fileToRemoveRow[0], EntityType.File)
+			else:
+				raise Exception("Not found resource on path: %s" % '/'.join(entityPathList))
 
 		else:
 			raise Exception("Not found path: %s" % '/'.join(entityPathList[:-1]))
@@ -238,9 +234,9 @@ class AddFolderCommand(CommonDataQueriesMixin, object):
 					newId = cursor.lastrowid
 					cursor.execute("INSERT INTO FoldersTree (parent_id, child_id, path_len) VALUES (%d,%d,%d)" % (parentFolderRow[0], newId, pathLen + 1))
 
-#todo Rename and refacroting
-class AddFileCommnad(CommonDataQueriesMixin, object):
-	"""Incapsulated AddFileCommnad logic"""
+
+class AddFileCommand(CommonDataQueriesMixin, object):
+	"""Incapsulated AddFileCommand logic"""
 
 	def __init__(self, args):
 		self.path = ''.join(args.path)
@@ -279,6 +275,7 @@ class RemoveAnyCommand(CommonDataQueriesMixin, object):
 		self.path = ''.join(args.path)
 
 	def execute(self):
+
 		fullPathList = self.getPathList(self.path)
 
 		with DatabaseProvider() as conn:
@@ -294,27 +291,88 @@ class RemoveAnyCommand(CommonDataQueriesMixin, object):
 				elif entityType == EntityType.Folder:
 
 					cursor.execute("""DELETE FROM Folders WHERE id = %d""" % entityId)
+
 		
-class ShowFileCommand(object):
+class ShowFileCommand(CommonDataQueriesMixin, object):
 	"""Incapsulates ShowFileCommand logic"""
 
 	def __init__(self, args):
-		self.path = args.path
+		self.path = ''.join(args.path)
 
 	def execute(self):
-		print("show file command")
-		pass
+
+		fullPathList = self.getPathList(self.path)
+
+		with DatabaseProvider() as conn:
+
+			entityId, entityType = self.getIdAndEntityTypeFromPath(fullPathList, conn)
+
+			if entityType == EntityType.File:
+
+				fileRow = conn.execute("SELECT id, filename, content FROM Files WHERE id = %d" % entityId).fetchone()
+
+				print("%s" % fileRow[2])
+
+			elif entityType == EntityType.Folder:
+
+				print("Show folder content not implemented yet, try `list` command.")
+
 		
-class EditCommand(object):
+class EditCommand(CommonDataQueriesMixin, object):
 	"""Incapsulates EditCommand logic"""
+
 	def __init__(self, args):
-		self.path = args.path
-		self.newname = args.name or None
-		self.newcontent = args.content or None
+		self.path = ''.join(args.path)
+		self.newname = ''.join(args.name) if args.name is not None else None
+		self.newcontent = ''.join(args.content) if args.content is not None else None
 
 	def execute(self):
-		print("edit command")
-		pass
+
+		fullPathList = self.getPathList(self.path)
+
+		if self.newname is not None:
+
+			newName = self.clearString(self.newname)
+
+			with DatabaseProvider() as conn:
+
+				entityId, entityType = self.getIdAndEntityTypeFromPath(fullPathList, conn)
+
+				with OpenDbTransaction(conn) as cursor:
+
+					if entityType == EntityType.File:
+
+						self.setNewFilename(newName, entityId, cursor)
+
+						if self.newcontent is not None:
+
+							newContent = self.clearString(self.newcontent)
+
+							self.setNewFileContent(newContent, entityId, cursor)
+
+					elif entityType == EntityType.Folder:
+
+						self.setNewFolderName(newName, entityId, cursor)
+		else:
+			print("Mm? Ok...")
+
+	def setNewFilename(self, newFilename, fileId, dbCursor):
+		dbCursor.execute("""
+			UPDATE Files
+			SET filename = '%s'
+			WHERE id = %d""" % (newFilename, fileId))
+
+	def setNewFileContent(self, newFileContent, fileId, dbCursor):
+		dbCursor.execute("""
+			UPDATE Files 
+			SET content = '%s', size = %d
+			WHERE id = %d""" % (newFileContent, len(newFileContent), fileId))
+
+	def setNewFolderName(self, newFolderName, folderId, dbCursor):
+		dbCursor.execute("""
+			UPDATE Folders
+			SET foldername = '%s'
+			WHERE id = %d""" % (newFolderName, folderId))
 		
 
 def parseArgs():
@@ -336,7 +394,7 @@ def parseArgs():
 	add_file.add_argument("path", nargs=1, help="path, like Root/My/Folder")
 	add_file.add_argument("filename", nargs=1, help="new file name")
 	add_file.add_argument("content", nargs=1, help="content of new file")
-	add_file.set_defaults(func=AddFileCommnad)
+	add_file.set_defaults(func=AddFileCommand)
 
 	remove_any = subparsers.add_parser("remove", help="remove file or folder at specified path")
 	remove_any.add_argument("path", nargs=1, help="path to removed file|folder")
