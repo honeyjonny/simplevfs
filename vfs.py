@@ -3,6 +3,8 @@ import argparse
 import os
 import sqlite3
 
+from enum import Enum
+
 CREATE_TABLE_FOLDERS = """
 CREATE TABLE IF NOT EXISTS 
 Folders (id integer PRIMARY KEY AUTOINCREMENT, foldername text NOT NULL UNIQUE)"""
@@ -17,7 +19,8 @@ FOREIGN KEY (child_id) REFERENCES Folders(id))
 
 CREATE_TABLE_FILES = """
 CREATE TABLE IF NOT EXISTS 
-Files (id integer PRIMARY KEY AUTOINCREMENT, folder_id integer NOT NULL, filename text NOT NULL, content text DEFAULT '', 
+Files (id integer PRIMARY KEY AUTOINCREMENT, folder_id integer NOT NULL, 
+filename text NOT NULL, content text DEFAULT '', size integer DEFAULT 0, 
 CONSTRAINT ParentFolder FOREIGN KEY (folder_id) REFERENCES Folders(id) ON DELETE CASCADE)"""
 
 CREATE_ROOT_FOLDER = """INSERT INTO Folders (foldername) VALUES ('Root')"""
@@ -39,6 +42,7 @@ class DatabaseProvider(object):
 		if extype is None:
 			self.conn.close()
 		else:
+			self.conn.close()
 			print("Exeption: ", extype)
 			return False
 
@@ -53,6 +57,7 @@ class OpenDbTransaction(object):
 		if extype is None:
 			self.conn.commit()
 		else:
+			self.conn.rollback()
 			print("Exeption: ", extype)
 			return False
 
@@ -67,11 +72,12 @@ class Command(object):
 
 class ListCommand(object):
 	"""Incapsulates list command logic"""
+
 	def __init__(self, args):
 		pass
 
 	def execute(self):
-		print("list command")
+		#print("list command")
 		with DatabaseProvider() as conn:
 			# for row in conn.execute("SELECT * FROM Folders"):
 			# 	print(row)
@@ -93,9 +99,9 @@ class ListCommand(object):
 
 		self.printEntity(folderDepth, folderRow[1])		
 
-		folderDepth += 1
-
 		self.printFilesInFolder(folderDepth, folderRow, dbConn)
+
+		folderDepth += 1
 
 		for folderRow in dbConn.execute("""
 			SELECT id, foldername 
@@ -108,86 +114,168 @@ class ListCommand(object):
 	def printFilesInFolder(self, folderDepth, folderRow, dbConn):
 
 		for file in dbConn.execute("""
-			SELECT filename 
+			SELECT filename, size 
 			FROM Files as files 
 			WHERE files.folder_id = %d""" % folderRow[0]).fetchall():
-			self.printEntity(folderDepth + 1, file[0])
+			self.printEntity(folderDepth + 1, file[0], file[1])
 
 	def printEntity(self, depth, entityName, size = None):
+
 		signs = '-' * depth
+
 		if size is not None:
 			print("%s %s  size: %d" % (signs, entityName, size))
 		else:
 			print("%s %s" % (signs, entityName))
-		
 
-class AddFolderCommand(object):
+class EntityType(Enum):
+	"""Enumerate types of entities for DeleteAnyCommand"""	
+	Folder = 1
+	File = 2
+		
+class CommonDataQueriesMixin(object):
+	"""Mix-ins into command class for reuse of db acces code"""
+
+	def findParentFolderByNameAndPathLen(self, parentFolderName, pathLen, dbConn):
+
+		parentFolderRow = None
+
+		if pathLen == 0:
+
+			parentFolderRow = dbConn.execute("SELECT id, foldername FROM Folders WHERE foldername = 'Root'").fetchone()
+
+		else:
+
+			findParentFolder = """
+			SELECT id, foldername 
+			FROM Folders as fold 
+			JOIN FoldersTree as tree ON (fold.id = tree.child_id) 
+			WHERE fold.id = (SELECT id FROM Folders WHERE foldername = '%s')
+			AND tree.path_len = %d""" % (parentFolderName, pathLen)
+
+			parentFolderRow = dbConn.execute(findParentFolder).fetchone()
+
+		return parentFolderRow
+
+	def clearString(self, pathString):
+		return pathString.lstrip("/").rstrip("/").replace('"',"").replace("'","")
+
+	def getPathList(self, fullPath):
+		return self.clearString(fullPath).split('/')
+
+	def getIdAndEntityTypeFromPath(self, entityPathList, dbConn):		
+
+		if len(entityPathList) == 1 and entityPathList[0].upper() == "ROOT":
+			raise Exception("You cannot delete Root folder.")
+
+		parentFolderName = entityPathList[-2]
+
+		pathLen = len(entityPathList) - 2
+
+		parentFolderRow = self.findParentFolderByNameAndPathLen(parentFolderName, pathLen, dbConn)
+
+		if parentFolderRow is not None:
+			
+			folderToRemoveName = entityPathList[-1]
+
+			folderToRemoveRow = dbConn.execute("""
+				SELECT id, foldername FROM Folders as fold 
+				JOIN FoldersTree as tree
+				ON (fold.id = tree.child_id)
+				WHERE tree.parent_id = %d
+				AND fold.foldername = '%s'""" % (parentFolderRow[0], folderToRemoveName)).fetchone()
+
+			print(folderToRemoveRow)
+
+			return (folderToRemoveRow[0], EntityType.Folder)
+		else:
+			#todo
+			pass
+
+
+class AddFolderCommand(CommonDataQueriesMixin, object):
 	"""Incapsulates add folder command logic"""
+
 	def __init__(self, args):
 		self.path = ''.join(args.path)
 		self.foldername = ''.join(args.foldername)
 
 	def execute(self):
 		
-		pathList = self.path.lstrip("/").rstrip("/").replace('"',"").replace("'","").split('/')
+		pathList = self.getPathList(self.path)
 
 		pathLen = len(pathList) - 1
 
-		newFolder = self.foldername
+		parentFolder = pathList[-1]
 
-		if pathLen == 0:
+		newFolder = self.clearString(self.foldername)
 
-			with DatabaseProvider() as conn:
+		with DatabaseProvider() as conn:
 
-				parentFolderRow = conn.execute("SELECT id FROM Folders WHERE foldername = 'Root'").fetchone()
+			parentFolderRow = self.findParentFolderByNameAndPathLen(parentFolder, pathLen, conn)
+		
+			if parentFolderRow is not None:
 
 				with OpenDbTransaction(conn) as cursor:
 					cursor.execute("INSERT INTO Folders (foldername) VALUES ('%s')" % newFolder)
 					newId = cursor.lastrowid
 					cursor.execute("INSERT INTO FoldersTree (parent_id, child_id, path_len) VALUES (%d,%d,%d)" % (parentFolderRow[0], newId, pathLen + 1))
-		else:		
-			parentFolder = pathList[-1]
-			
-			findParentFolder = """
-			SELECT id, foldername 
-			FROM Folders as fold 
-			JOIN FoldersTree as tree ON (fold.id = tree.child_id) 
-			WHERE fold.id = (SELECT id FROM Folders WHERE foldername = '%s')
-			AND tree.path_len = %d""" % (parentFolder, pathLen)
 
-			with DatabaseProvider() as conn:
-				parentFolderRow = conn.execute(findParentFolder).fetchone()
-			
-				if parentFolderRow is not None:
-
-					with OpenDbTransaction(conn) as cursor:
-						cursor.execute("INSERT INTO Folders (foldername) VALUES ('%s')" % newFolder)
-						newId = cursor.lastrowid
-						cursor.execute("INSERT INTO FoldersTree (parent_id, child_id, path_len) VALUES (%d,%d,%d)" % (parentFolderRow[0], newId, pathLen + 1))
-			pass
-
-class AddFileCommnad(object):
+#todo Rename and refacroting
+class AddFileCommnad(CommonDataQueriesMixin, object):
 	"""Incapsulated AddFileCommnad logic"""
+
 	def __init__(self, args):
-		self.path = args.path
-		self.filename = args.filename
-		self.content = args.content
+		self.path = ''.join(args.path)
+		self.filename = ''.join(args.filename)
+		self.content = ''.join(args.content)
 
 	def execute(self):
-		print("add file command")
-		pass
+		
+		pathList = self.getPathList(self.path)
 
-class RemoveAnyCommand(object):
+		parentFolderName = pathList[-1]
+
+		pathLen = len(pathList) - 1
+
+		newFilename = self.clearString(self.filename)
+
+		fileContent = self.clearString(self.content)
+
+		with DatabaseProvider() as conn:
+
+			parentFolderRow = self.findParentFolderByNameAndPathLen(parentFolderName, pathLen, conn)
+
+			if parentFolderRow is not None:
+
+				with OpenDbTransaction(conn) as cursor:
+					cursor.execute("""
+						INSERT INTO 
+						Files(filename, content, folder_id, size) 
+						VALUES ('%s', '%s', %d, %d)""" % (newFilename, fileContent, parentFolderRow[0], len(fileContent)))
+
+
+class RemoveAnyCommand(CommonDataQueriesMixin, object):
 	"""Incapsulates RemoveAnyCommand logic"""
+
 	def __init__(self, args):
-		self.path = args.path
+		self.path = ''.join(args.path)
 
 	def execute(self):
 		print("remove_any command")
+
+		fullPathList = self.getPathList(self.path)
+
+		with DatabaseProvider() as conn:
+
+			entityId, entityType = self.getIdAndEntityTypeFromPath(fullPathList, conn)
+			#todo for file and folder
+
 		pass
 		
 class ShowFileCommand(object):
 	"""Incapsulates ShowFileCommand logic"""
+
 	def __init__(self, args):
 		self.path = args.path
 
@@ -254,15 +342,12 @@ def parseArgs():
 
 def checkDb():
 	if not os.path.exists(DatabaseProvider.DatabaseFile):
-		conn = DatabaseProvider.openConnection()
-		with OpenDbTransaction(conn) as cursor:
-			cursor.execute(CREATE_TABLE_FOLDERS)
-			cursor.execute(CREATE_TABLE_FILES)
-			cursor.execute(CREATE_TABLE_FOLDERS_HIERACHY)
-			cursor.execute(CREATE_ROOT_FOLDER)
-			# cursor.execute(SUB_FOLDER)
-			# cursor.execute(CLOSURE)
-		conn.close()
+		with DatabaseProvider() as conn:
+			with OpenDbTransaction(conn) as cursor:
+				cursor.execute(CREATE_TABLE_FOLDERS)
+				cursor.execute(CREATE_TABLE_FILES)
+				cursor.execute(CREATE_TABLE_FOLDERS_HIERACHY)
+				cursor.execute(CREATE_ROOT_FOLDER)
 
 def main():
 	checkDb()
