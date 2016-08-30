@@ -24,7 +24,7 @@ simple console app to work with virtual file system, based on sqlite database
 4.	Общая функциоальность при работе с БД вынесена в специальный mixin класс, который можно
 	переиспользовать в классах команд.
 
-5.	В данный момент реализована логика для команд list, add_folder, add_file. 
+5.	В данный момент реализована логика для команд list, add_folder, add_file, remove. 
 
 
 ##### ENG:

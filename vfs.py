@@ -79,12 +79,19 @@ class ListCommand(object):
 	def execute(self):
 		#print("list command")
 		with DatabaseProvider() as conn:
+
 			# for row in conn.execute("SELECT * FROM Folders"):
 			# 	print(row)
 			# print("------------------------------------------")
+
 			# for row in conn.execute("SELECT * FROM FoldersTree"):
 			# 	print(row)
 			# print("*******************************************")
+
+			# for row in conn.execute("SELECT * FROM Files"):
+			# 	print(row)
+
+			# print("++++++++++++++++++++++++++++++++++++++++++++")
 
 			folderDepth = 1
 			rootFolder = conn.execute("""
@@ -173,24 +180,34 @@ class CommonDataQueriesMixin(object):
 		pathLen = len(entityPathList) - 2
 
 		parentFolderRow = self.findParentFolderByNameAndPathLen(parentFolderName, pathLen, dbConn)
-
-		if parentFolderRow is not None:
 			
-			folderToRemoveName = entityPathList[-1]
+		if parentFolderRow is not None:
+
+			entityToRemoveName = entityPathList[-1]
 
 			folderToRemoveRow = dbConn.execute("""
 				SELECT id, foldername FROM Folders as fold 
 				JOIN FoldersTree as tree
 				ON (fold.id = tree.child_id)
 				WHERE tree.parent_id = %d
-				AND fold.foldername = '%s'""" % (parentFolderRow[0], folderToRemoveName)).fetchone()
+				AND fold.foldername = '%s'""" % (parentFolderRow[0], entityToRemoveName)).fetchone()
 
-			print(folderToRemoveRow)
+			fileToRemoveRow = dbConn.execute("""
+				SELECT id, filename FROM Files
+				WHERE folder_id = %d
+				AND filename = '%s'""" % (parentFolderRow[0], entityToRemoveName)).fetchone()
 
-			return (folderToRemoveRow[0], EntityType.Folder)
+			if folderToRemoveRow is not None and fileToRemoveRow is None:
+				print(folderToRemoveRow)
+				return (folderToRemoveRow[0], EntityType.Folder)
+
+			elif fileToRemoveRow is not None and folderToRemoveRow is None:
+				print(fileToRemoveRow)
+				return (fileToRemoveRow[0], EntityType.File)
+
 		else:
-			#todo
-			pass
+			raise Exception("Not found path: %s" % '/'.join(entityPathList[:-1]))
+
 
 
 class AddFolderCommand(CommonDataQueriesMixin, object):
@@ -262,16 +279,21 @@ class RemoveAnyCommand(CommonDataQueriesMixin, object):
 		self.path = ''.join(args.path)
 
 	def execute(self):
-		print("remove_any command")
-
 		fullPathList = self.getPathList(self.path)
 
 		with DatabaseProvider() as conn:
 
 			entityId, entityType = self.getIdAndEntityTypeFromPath(fullPathList, conn)
-			#todo for file and folder
 
-		pass
+			with OpenDbTransaction(conn) as cursor:
+			
+				if entityType == EntityType.File:
+
+					cursor.execute("""DELETE FROM Files WHERE id = %d""" % entityId)
+
+				elif entityType == EntityType.Folder:
+
+					cursor.execute("""DELETE FROM Folders WHERE id = %d""" % entityId)
 		
 class ShowFileCommand(object):
 	"""Incapsulates ShowFileCommand logic"""
