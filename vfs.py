@@ -143,7 +143,10 @@ class CommonDataQueriesMixin(object):
 
 		if pathLen == 0:
 
-			parentFolderRow = dbConn.execute("SELECT id, foldername FROM Folders WHERE foldername = 'Root'").fetchone()
+			parentFolderRow = dbConn.execute("""
+				SELECT id, foldername 
+				FROM Folders 
+				WHERE foldername = 'Root'""").fetchone()
 
 		else:
 
@@ -232,7 +235,9 @@ class AddFolderCommand(CommonDataQueriesMixin, object):
 				with OpenDbTransaction(conn) as cursor:
 					cursor.execute("INSERT INTO Folders (foldername) VALUES ('%s')" % newFolder)
 					newId = cursor.lastrowid
-					cursor.execute("INSERT INTO FoldersTree (parent_id, child_id, path_len) VALUES (%d,%d,%d)" % (parentFolderRow[0], newId, pathLen + 1))
+					cursor.execute("""
+						INSERT INTO FoldersTree (parent_id, child_id, path_len) 
+						VALUES (%d,%d,%d)""" % (parentFolderRow[0], newId, pathLen + 1))
 
 
 class AddFileCommand(CommonDataQueriesMixin, object):
@@ -309,7 +314,10 @@ class ShowFileCommand(CommonDataQueriesMixin, object):
 
 			if entityType == EntityType.File:
 
-				fileRow = conn.execute("SELECT id, filename, content FROM Files WHERE id = %d" % entityId).fetchone()
+				fileRow = conn.execute("""
+					SELECT id, filename, content 
+					FROM Files 
+					WHERE id = %d""" % entityId).fetchone()
 
 				print("%s" % fileRow[2])
 
