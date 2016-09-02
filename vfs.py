@@ -65,67 +65,94 @@ class OpenDbTransaction(object):
 class ListCommand(object):
 	"""Incapsulates list command logic"""
 
+	selectChildFoldersTemplate = """
+			SELECT id, foldername 
+			FROM Folders as fold 
+			JOIN FoldersTree as tree 
+			ON (fold.id = tree.child_id) 
+			WHERE tree.parent_id = %d"""
+
 	def __init__(self, args):
 		pass
 
 	def execute(self):
-		#print("list command")
 		with DatabaseProvider() as conn:
-
-			# for row in conn.execute("SELECT * FROM Folders"):
-			# 	print(row)
-			# print("------------------------------------------")
-
-			# for row in conn.execute("SELECT * FROM FoldersTree"):
-			# 	print(row)
-			# print("*******************************************")
-
-			# for row in conn.execute("SELECT * FROM Files"):
-			# 	print(row)
-
-			# print("++++++++++++++++++++++++++++++++++++++++++++")
-
 			folderDepth = 1
 			rootFolder = conn.execute("""
 				SELECT id, foldername 
 				FROM Folders 
 				WHERE foldername = 'Root'""").fetchone()
-			#print(rootFolder)
 			self.printFolderStructure(folderDepth, rootFolder, conn)
 
 
 	def printFolderStructure(self, folderDepth, folderRow, dbConn):
 
-		self.printEntity(folderDepth, folderRow[1])		
+		childFoldersList = self.getChildsForFolderId(folderRow[0], dbConn)
 
-		self.printFilesInFolder(folderDepth, folderRow, dbConn)
+		childFiles = self.getFilesByFolderId(folderRow[0], dbConn)
+
+
+		folderSize = self.getChildsFoldersSize(childFoldersList, dbConn)
+
+		folderSize = folderSize + self.sumFilesSize(childFiles)
+
+
+		childsFoldersLen = len(childFoldersList)
+
+		filesNumber = len(childFiles) if len(childFiles) > 0 else None
+
+
+		self.printFolder(folderDepth, folderRow[1], folderSize, childsFoldersLen, filesNumber)
 
 		folderDepth += 1
 
-		for folderRow in dbConn.execute("""
-			SELECT id, foldername 
-			FROM Folders as fold 
-			JOIN FoldersTree as tree 
-			ON (fold.id = tree.child_id) 
-			WHERE tree.parent_id = %d""" % folderRow[0]).fetchall():
-			self.printFolderStructure(folderDepth, folderRow, dbConn)
+		for childFile in childFiles:
+			self.printFile(folderDepth, childFile[0], childFile[1])
 
-	def printFilesInFolder(self, folderDepth, folderRow, dbConn):
+		for childFolderRow in childFoldersList:
+			self.printFolderStructure(folderDepth, childFolderRow, dbConn)
 
-		for file in dbConn.execute("""
+	def getChildsForFolderId(self, folderId, dbConn):
+		return dbConn.execute(self.selectChildFoldersTemplate % folderId).fetchall()
+
+	def getChildsFoldersSize(self, childFoldersList, dbConn):
+		
+		size = 0
+
+		for folder in childFoldersList:
+
+			filesInFolder = self.getFilesByFolderId(folder[0], dbConn)
+
+			filesSize = self.sumFilesSize(filesInFolder)
+
+			subFolders = self.getChildsForFolderId(folder[0], dbConn)
+
+			subFoldersSize = self.getChildsFoldersSize(subFolders, dbConn)
+
+			size = size + filesSize + subFoldersSize
+
+		return size
+
+	def getFilesByFolderId(self, folderId, dbConn):
+		return dbConn.execute("""
 			SELECT filename, size 
 			FROM Files as files 
-			WHERE files.folder_id = %d""" % folderRow[0]).fetchall():
-			self.printEntity(folderDepth + 1, file[0], file[1])
+			WHERE files.folder_id = %d""" % folderId).fetchall()
 
-	def printEntity(self, depth, entityName, size = None):
+	def sumFilesSize(self, filesInFolderList):
+		return sum(map(lambda fileRow: fileRow[1], filesInFolderList))
 
+	def printFile(self, depth, fileName, size):
+		signs = '-' * depth
+		print("%s %s (Type: file, Size: %d bytes)" % (signs, fileName, size))
+
+	def printFolder(self, depth, folderName,  folderSize, childsFoldersNumber, filesNumber = None):
 		signs = '-' * depth
 
-		if size is not None:
-			print("%s %s (Type: file, Size: %d bytes)" % (signs, entityName, size))
+		if filesNumber is not None:
+			print("""%s %s (Size: %d, Folders: %d, Files: %d)""" % (signs, folderName, folderSize, childsFoldersNumber, filesNumber))
 		else:
-			print("%s %s" % (signs, entityName))
+			print("""%s %s (Size: %d, Folders: %d)""" % (signs, folderName, folderSize, childsFoldersNumber))
 
 
 class EntityType(Enum):
@@ -338,31 +365,34 @@ class EditCommand(CommonDataQueriesMixin, object):
 
 		fullPathList = self.getPathList(self.path)
 
-		if self.newname is not None:
+		with DatabaseProvider() as conn:
 
-			newName = self.clearString(self.newname)
+			entityId, entityType = self.getIdAndEntityTypeFromPath(fullPathList, conn)
 
-			with DatabaseProvider() as conn:
+			with OpenDbTransaction(conn) as cursor:
 
-				entityId, entityType = self.getIdAndEntityTypeFromPath(fullPathList, conn)
+				if entityType == EntityType.File:
 
-				with OpenDbTransaction(conn) as cursor:
+					if self.newname is not None:
 
-					if entityType == EntityType.File:
+						newName = self.clearString(self.newname)
 
 						self.setNewFilename(newName, entityId, cursor)
 
-						if self.newcontent is not None:
+					if self.newcontent is not None:
 
-							newContent = self.clearString(self.newcontent)
+						newContent = self.clearString(self.newcontent)
 
-							self.setNewFileContent(newContent, entityId, cursor)
+						self.setNewFileContent(newContent, entityId, cursor)
 
-					elif entityType == EntityType.Folder:
+				elif entityType == EntityType.Folder:
+
+					if self.newname is not None:
+
+						newName = self.clearString(self.newname)					
 
 						self.setNewFolderName(newName, entityId, cursor)
-		else:
-			print("Mm? Ok...")
+
 
 	def setNewFilename(self, newFilename, fileId, dbCursor):
 		dbCursor.execute("""
